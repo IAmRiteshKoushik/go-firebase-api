@@ -75,6 +75,7 @@ func getBooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Let's convert the map to a slice of books for a cleaner JSON output
 	var bookList []Book
 	for id, book := range books {
 		book.ID = id
@@ -84,9 +85,55 @@ func getBooks(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(bookList)
 }
 
-func getBookById(w http.ResponseWriter, r *http.Request) {}
+func getBookById(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	params := mux.Vars(r)
+	bookID := params["id"]
 
-func createBook(w http.ResponseWriter, r *http.Request) {}
+	ref := getBooksRef().Child(bookID)
+	var book Book
+	if err := ref.Get(ctx, &book); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to retrive book: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Check if the struct has zero-values
+	if book.Title == "" {
+		http.Error(w, "Book not found", http.StatusNotFound)
+		return
+	}
+
+	book.ID = bookID
+	json.NewEncoder(w).Encode(book)
+}
+
+func createBook(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var newBook Book
+	if err := json.NewDecoder(r.Body).Decode(&newBook); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	// We are first creating an empty child node with an ID and getting the reference back
+	ref, err := getBooksRef().Push(ctx, nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Using set, a value is stored in the database
+	newBook.Added = time.Now()
+	if err := ref.Set(ctx, newBook); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create book: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	newBook.ID = ref.Key
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(newBook)
+}
 
 func updateBook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -94,6 +141,20 @@ func updateBook(w http.ResponseWriter, r *http.Request) {
 	bookID := params["id"]
 
 	var updatedBook Book
+	if err := json.NewDecoder(r.Body).Decode(&updatedBook); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	ref := getBooksRef().Child(bookID)
+	if err := ref.Set(ctx, updatedBook); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to update book: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	updatedBook.ID = bookID
+	json.NewEncoder(w).Encode(updatedBook)
 }
 
 func deleteBook(w http.ResponseWriter, r *http.Request) {
