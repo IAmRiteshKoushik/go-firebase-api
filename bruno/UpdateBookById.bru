@@ -1,0 +1,23 @@
+meta {
+  name: UpdateBookById
+  type: http
+  seq: 5
+}
+
+put {
+  url: http://localhost:8080/api/books/:id
+  body: json
+  auth: inherit
+}
+
+params:path {
+  id: nP840K4h5FSgjwhHvC0H
+}
+
+body:json {
+  {
+    "title": "Animal Farm II",
+    "author": "Charles Dickens",
+    "year": "1830"
+  }
+}

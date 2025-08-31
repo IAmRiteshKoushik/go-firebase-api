@@ -8,45 +8,50 @@ import (
 	"net/http"
 	"time"
 
+	"cloud.google.com/go/firestore"
 	firebase "firebase.google.com/go"
-	"firebase.google.com/go/db"
 	"github.com/gorilla/mux"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
 	firebaseConfigFile = "firebaseConfig.json"
-	firebaseDBURL      = ""
 )
 
 type Book struct {
-	ID     string    `json:"id,omitempty"`
 	Title  string    `json:"title"`
 	Author string    `json:"author"`
 	Year   string    `json:"year"`
-	Added  time.Time `json:"added,omitempty"`
+	Added  time.Time `json:"added"`
+}
+
+type BooksWithID struct {
+	ID string `json:"id"`
+	Book
 }
 
 var (
 	ctx    context.Context
 	app    *firebase.App
-	client *db.Client
+	client *firestore.Client
 )
 
 func main() {
 	ctx = context.Background()
 	opt := option.WithCredentialsFile(firebaseConfigFile)
-	app, err := firebase.NewApp(ctx, &firebase.Config{
-		DatabaseURL: firebaseDBURL,
-	}, opt)
+	app, err := firebase.NewApp(ctx, nil, opt) // Firestore doesn't need a config
 	if err != nil {
 		log.Fatalf("Firebase initialization error: %v\n", err)
 	}
 
-	client, err = app.Database(ctx)
+	client, err = app.Firestore(ctx)
 	if err != nil {
 		log.Fatalf("Firestore initialization error: %v\n", err)
 	}
+	defer client.Close()
 
 	router := mux.NewRouter()
 
@@ -61,28 +66,35 @@ func main() {
 	log.Fatal(http.ListenAndServe(port, router))
 }
 
-func getBooksRef() *db.Ref {
-	return client.NewRef("books")
-}
-
 func getBooks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	ref := getBooksRef()
-	var books map[string]Book
 
-	if err := ref.Get(ctx, &books); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to retrive books: %v", err), http.StatusInternalServerError)
-		return
+	iter := client.Collection("books").Documents(ctx)
+	var books []BooksWithID
+
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to iterate document: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		var book Book
+		if err := doc.DataTo(&book); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to parse document data: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		books = append(books, BooksWithID{
+			ID:   doc.Ref.ID,
+			Book: book,
+		})
 	}
 
-	// Let's convert the map to a slice of books for a cleaner JSON output
-	var bookList []Book
-	for id, book := range books {
-		book.ID = id
-		bookList = append(bookList, book)
-	}
-
-	json.NewEncoder(w).Encode(bookList)
+	json.NewEncoder(w).Encode(books)
 }
 
 func getBookById(w http.ResponseWriter, r *http.Request) {
@@ -90,25 +102,33 @@ func getBookById(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	bookID := params["id"]
 
-	ref := getBooksRef().Child(bookID)
+	docRef := client.Collection("books").Doc(bookID)
+	docSnap, err := docRef.Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			http.Error(w, "Book not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf("Failed to retriveb book: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	var book Book
-	if err := ref.Get(ctx, &book); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to retrive book: %v", err), http.StatusInternalServerError)
+	if err := docSnap.DataTo(&book); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to parse document data: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Check if the struct has zero-values
-	if book.Title == "" {
-		http.Error(w, "Book not found", http.StatusNotFound)
-		return
+	bookWithID := BooksWithID{
+		ID:   docSnap.Ref.ID,
+		Book: book,
 	}
-
-	book.ID = bookID
-	json.NewEncoder(w).Encode(book)
+	json.NewEncoder(w).Encode(bookWithID)
 }
 
 func createBook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
 	var newBook Book
 	if err := json.NewDecoder(r.Body).Decode(&newBook); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusInternalServerError)
@@ -116,23 +136,20 @@ func createBook(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	// We are first creating an empty child node with an ID and getting the reference back
-	ref, err := getBooksRef().Push(ctx, nil)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Using set, a value is stored in the database
 	newBook.Added = time.Now()
-	if err := ref.Set(ctx, newBook); err != nil {
+
+	docRef, _, err := client.Collection("books").Add(ctx, newBook)
+	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create book: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	newBook.ID = ref.Key
+	bookWithID := BooksWithID{
+		ID:   docRef.ID,
+		Book: newBook,
+	}
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newBook)
+	json.NewEncoder(w).Encode(bookWithID)
 }
 
 func updateBook(w http.ResponseWriter, r *http.Request) {
@@ -147,14 +164,14 @@ func updateBook(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	ref := getBooksRef().Child(bookID)
-	if err := ref.Set(ctx, updatedBook); err != nil {
+	_, err := client.Collection("books").Doc(bookID).Set(ctx, updatedBook)
+	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to update book: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	updatedBook.ID = bookID
-	json.NewEncoder(w).Encode(updatedBook)
+	bookWithID := BooksWithID{ID: bookID, Book: updatedBook}
+	json.NewEncoder(w).Encode(bookWithID)
 }
 
 func deleteBook(w http.ResponseWriter, r *http.Request) {
@@ -162,9 +179,10 @@ func deleteBook(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	bookID := params["id"]
 
-	ref := getBooksRef().Child(bookID)
-	if err := ref.Delete(ctx); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to delete bok: %v", err), http.StatusInternalServerError)
+	// The ignored field here is of WriteResult type which is just a timestamp
+	_, err := client.Collection("books").Doc(bookID).Delete(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to delete book: %v", err), http.StatusInternalServerError)
 		return
 	}
 

@@ -1,0 +1,5 @@
+# Ignoring binary
+go-firebase-api
+
+# Ignoring JSON config
+firebaseConfig.json 
