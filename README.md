@@ -33,13 +33,7 @@ as the data store. The goal is to test and explore integrating Firebase and Go.
 3. **Add Firebase Credentials**
 
     - Download your Firebase project’s service account JSON.
-    - Save it locally (e.g., `serviceAccountKey.json`).
-
-4. **Set GOOGLE_APPLICATION_CREDENTIALS**
-
-    ```
-    export GOOGLE_APPLICATION_CREDENTIALS="path/to/serviceAccountKey.json"
-    ```
+    - Save it locally (e.g., `firebaseConfig.json`).
 
 5. **Run the Application**
 
