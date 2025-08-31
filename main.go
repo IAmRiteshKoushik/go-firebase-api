@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -64,12 +65,48 @@ func getBooksRef() *db.Ref {
 	return client.NewRef("books")
 }
 
-func getBooks(w http.ResponseWriter, r *http.Request) {}
+func getBooks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	ref := getBooksRef()
+	var books map[string]Book
+
+	if err := ref.Get(ctx, &books); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to retrive books: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	var bookList []Book
+	for id, book := range books {
+		book.ID = id
+		bookList = append(bookList, book)
+	}
+
+	json.NewEncoder(w).Encode(bookList)
+}
 
 func getBookById(w http.ResponseWriter, r *http.Request) {}
 
 func createBook(w http.ResponseWriter, r *http.Request) {}
 
-func updateBook(w http.ResponseWriter, r *http.Request) {}
+func updateBook(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	params := mux.Vars(r)
+	bookID := params["id"]
 
-func deleteBook(w http.ResponseWriter, r *http.Request) {}
+	var updatedBook Book
+}
+
+func deleteBook(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	params := mux.Vars(r)
+	bookID := params["id"]
+
+	ref := getBooksRef().Child(bookID)
+	if err := ref.Delete(ctx); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to delete bok: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Book deleted successfully"})
+}
